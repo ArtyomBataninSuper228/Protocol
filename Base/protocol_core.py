@@ -326,7 +326,7 @@ class Inner_Server_Connection:
         if id == 0:
             pass
         elif id == 3:
-            self.send_msg(3, message)
+            self.conn.inner_queue.put(message)
     def send_msg(self, id, msg):
         num_packets = math.ceil(len(msg)/self.conn.psz)
         if num_packets == 0:
@@ -373,13 +373,16 @@ class Server_Connection():
         self.recieved_packets = queue.Queue()
         self.packets_to_send = deque()
         self.is_alive = True
-        self.user_inner_buffer = queue.Queue()
+        #self.user_inner_buffer = queue.Queue()
         self.recieved_packets_num = 0
+        self.inner_queue = queue.Queue()
 
         process_thread = threading.Thread(target = self.packet_process)
         process_thread.start()
         sender_thread = threading.Thread(target=self.packet_sender)
         sender_thread.start()
+        handler_thread = threading.Thread(target=self.server.handler, args = (self, ))
+        handler_thread.start()
         self.server = server
         self.server.connections[self.id]   = self
         self.server.addr_id[(self.ip, self.port)] = id
@@ -396,7 +399,6 @@ class Server_Connection():
                     self.recieved_packets_num += 1
                     id, data, addr = self.recieved_packets.get()
                     if addr != (self.ip, self.port):
-                        print(addr, self.ip, self.port)
                         self.server.addr_id.pop((self.ip, self.port))
                         self.server.addr_id[addr] = id
                         self.ip = addr[0]
@@ -477,7 +479,6 @@ class Server :
         self.buffersz = buffersz
         self.socket.bind((self.ip, self.port))
         self.connections = {}
-        self.handler = handler
         self.is_alive = True
         reciever_thread = threading.Thread(target=self.packet_reciever)
         reciever_thread.start()
