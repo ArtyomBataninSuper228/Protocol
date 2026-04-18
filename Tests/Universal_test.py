@@ -9,7 +9,6 @@ import random
 
 from Base.protocol_core import *
 
-
 class TestProtocolSystem(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
