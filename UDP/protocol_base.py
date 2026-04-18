@@ -3,7 +3,7 @@ import queue
 import socket
 import threading
 import time
-import numpy as np
+#import numpy as np
 from collections import deque
 
 class GlobalDataStream:

@@ -488,9 +488,9 @@ class Server :
 
     def packet_reciever(self):
         buff = bytearray(1500)
-
+        self.socket.settimeout(1)
         while self.is_alive:
-            self.socket.settimeout(1)
+
             try:
                 len, addr = self.socket.recvfrom_into(buff, 1500)
             except socket.timeout:

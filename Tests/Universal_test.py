@@ -24,7 +24,6 @@ class TestProtocolSystem(unittest.TestCase):
         debug("Starting server")
         time.sleep(1)  # Даем серверу время "поднять" сокет
 
-
     @classmethod
     def tearDownClass(cls):
         # Жестко завершаем сервер после всех тестов
@@ -57,12 +56,11 @@ class TestProtocolSystem(unittest.TestCase):
             con.send_inner(bytes(data))
         t2 = time.time_ns()
         con.close()
-        info(f"Inner channel stress test ended, speed:{100*255*con.psz/(t2-t1)/1024/1024*10**9} MB/s")
+        info(f"Inner channel stress test ended, speed:{100*255*con.psz/(t2-t1)/1024/1024*10**9} MB/s, psz:{con.psz}")
 
 
     def test_03_inner_channel_ping(self, num = 100):
         con = Connection("127.0.0.1", 5000)
-
         ping = []
         dat = []
         for i in range(1280):
@@ -75,11 +73,6 @@ class TestProtocolSystem(unittest.TestCase):
             ping.append((t2-t1)/1000000)
         con.close()
         info(f"Test 3 inner channel ping ended avg:{sum(ping)/len(ping)} ms, max:{max(ping)} ms, min:{min(ping)} ms")
-
-
-
-
-
 
 if __name__ == '__main__':
     unittest.main()
