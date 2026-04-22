@@ -17,4 +17,4 @@ class Zero_Handler:
             time.sleep(1/1000)
 
 
-server = Server('127.0.0.1', 6552, Zero_Handler)
+server = Server('127.0.0.1', 5000, Zero_Handler)

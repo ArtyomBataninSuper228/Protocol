@@ -2,7 +2,7 @@ import time
 
 from Base.protocol_core import *
 import random
-con = Connection("127.0.0.1", 6552)
+con = Connection("192.168.1.12", 6552)
 con.timeout = 4
 con.psz = 1280
 data = []
