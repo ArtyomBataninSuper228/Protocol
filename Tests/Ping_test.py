@@ -3,7 +3,7 @@ import random
 
 num = 1000
 
-con = Connection("192.168.1.12", 6552)
+con = Connection("46.45.15.136", 6552)
 ping = []
 dat = []
 for i in range(1280):

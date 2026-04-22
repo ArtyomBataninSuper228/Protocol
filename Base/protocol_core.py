@@ -479,7 +479,10 @@ class Server_Connection():
                     if global_id in (0, 1):## Inner Channel
 
                         if addr != (self.ip, self.port):
-                            self.server.addr_id.pop((self.ip, self.port))
+                            try:
+                                self.server.addr_id.pop((self.ip, self.port))
+                            except KeyError:
+                                pass
                             self.server.addr_id[addr] = id
                             self.ip = addr[0]
                             self.port = addr[1]
