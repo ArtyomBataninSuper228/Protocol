@@ -1,7 +1,7 @@
 from Base.protocol_core import *
 import random
 
-num = 1000
+num = 100
 
 con = Connection("46.45.15.136", 6552)
 ping = []

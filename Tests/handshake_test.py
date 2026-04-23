@@ -1,10 +1,10 @@
 from Base.protocol_core import *
-num = 100
+num = 10
 all = 0
 errors = 0
 for i in range(num):
             try:
-                client = Connection("46.45.15.136", 6552)
+                client = Connection("127.0.0.1", 5000)
                 client.close()
             except Exception as e:
                 #exception(str(e))

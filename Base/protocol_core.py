@@ -1,3 +1,4 @@
+from __future__ import annotations
 import binascii
 import queue
 import socket
@@ -5,6 +6,17 @@ import threading
 import time
 import math
 from collections import deque
+import secrets
+import os
+import zlib
+from ssl import cert_time_to_seconds
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
+from cryptography import x509
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import hashes
+import datetime
 
 
 
@@ -74,6 +86,8 @@ Inner Packet ID:
 2 - End of block
 3 - User data
 4 - Block is ended
+5 - Send certificate (server) / send key (client)
+6 - Send id + salt
 """
 '''
 Packet Structure:
@@ -85,7 +99,7 @@ ID (Global id (0-9) + inner id (0-9)) ||| Connection ID  ||| packet_id ||| Num (
 
 
 class Inner_Client_Connection:
-    def __init__(self, conn):
+    def __init__(self, conn:Connection):
         self.buffer = GlobalDataStream()
         self.conn = conn
         self.packets = []
@@ -139,8 +153,36 @@ class Inner_Client_Connection:
             self.conn.send_packet(10, a.to_bytes(4, byteorder='big'))
             self.conn.event.set()
         elif id == 3:
-            self.conn.is_started = False
             self.conn.user_inner_buffer.put(message)
+        elif id == 5:
+            cert_data = message
+            cert = x509.load_pem_x509_certificate(cert_data)
+            public_key = cert.public_key()
+            self.conn.cert = cert
+            self.conn.public_key = public_key
+            print('___Проверка Сертификата___')
+            print(f"Субъект: {cert.subject}")
+            print(f"Действителен до: {cert.not_valid_after_utc}")
+            if cert.not_valid_after_utc < datetime.datetime.now(datetime.timezone.utc):
+                print("ВНИМАНИЕ: Сертификат просрочен!")
+                raise PermissionError('Сертификат просрочен')
+            print('KEY', self.conn.key)
+
+            ciphertext = public_key.encrypt(
+                self.conn.key,
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),  # Функция генерации маски
+                    algorithm=hashes.SHA256(),  # Хеш-алгоритм
+                    label=None
+                )
+            )
+            self.send_msg(5, ciphertext)
+        if id == 6:
+            conn_id = int.from_bytes(message[:4], byteorder='big')
+            salt = message[4:36]
+            print(conn_id, salt)
+            self.conn.event.set()
+
 
     def send_msg(self, id, msg):
         num_packets = math.ceil(len(msg)/self.conn.psz)
@@ -180,7 +222,7 @@ ICC = Inner_Client_Connection
 
 
 class Connection():
-    def __init__(self, ip, port, timeout = 1, buffersz = 1024 * 1024 * 10):
+    def __init__(self, ip, port, timeout = 1, buffersz = 1024 * 1024 * 10, is_coding = True):
         self.buffer = GlobalDataStream()
         self.ip = ip
         self.port = port
@@ -190,6 +232,7 @@ class Connection():
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, buffersz)
         self.timeout = timeout
         self.buffersz = buffersz
+        self.is_coding = False
 
 
         self.psz = 1280
@@ -206,6 +249,11 @@ class Connection():
         self.recieved_packets = deque()
         self.packets_to_send = deque()
         self.blocks_in_process = []
+        self.salt = None
+        self.secret_noise = secrets.token_bytes(32)
+        self.certificate = None
+        self.key = secrets.token_bytes(32)
+        self.id_hash = None
 
         self.block_builder = None
         sender = threading.Thread(target=self.packet_sender)
@@ -215,11 +263,22 @@ class Connection():
         self.user_inner_buffer = queue.Queue()
         self.event = threading.Event()
         self.inner_channel = ICC(self)
+        #data = self.secret_noise + int(is_coding).to_bytes(1, byteorder='big')
+        # Global ID (0) ||| Inner ID (0) ||| Secret_noise ||| coding |||
+        ok = 0
         for i in range(int(timeout/0.5)):
             self.add_packet(0, 0, b"", True)
             if self.event.wait(0.5):
-                return
-        raise ConnectionError
+                self.is_coding= is_coding
+                ok = 1
+                break
+        if ok == 0:
+            raise ConnectionError
+        self.event.clear()
+        while not self.event.wait(0.5):
+            pass
+
+
 
     def send_inner(self, msg):
         self.inner_channel.send_msg(3, msg)
@@ -329,7 +388,7 @@ ID (Global id (0-9) + inner id (0-9))  ||| packet_id ||| Num (0-256) ||| Total m
 
 
 class Inner_Server_Connection:
-    def __init__(self, conn):
+    def __init__(self, conn:Server_Connection):
         self.buffer = GlobalDataStream()
         self.conn = conn
         self.packets = []
@@ -338,6 +397,7 @@ class Inner_Server_Connection:
         self.last_sended_packet_id = 0
         self.last_recieved_id = -1
         self.message_id = 0
+        self.is_encoding = False
 
     def put_packet(self, id, data):
 
@@ -379,6 +439,30 @@ class Inner_Server_Connection:
             pass
         elif id == 3:
             self.conn.inner_queue.put(message)
+        elif id == 5:
+            decrypted_key = self.conn.server.private_key.decrypt(
+                message,
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
+            )
+
+            self.conn.key = decrypted_key
+            print('key',self.conn.key)
+            id = int.from_bytes(secrets.token_bytes(4), byteorder='big')
+            data = id.to_bytes(4, byteorder='big') + self.conn.salt
+            hash = binascii.crc32(self.conn.salt + self.conn.id.to_bytes(4, byteorder='big'))
+            while hash in self.conn.server.connections:
+                hash = binascii.crc32(self.conn.salt + id.to_bytes(4, byteorder='big'))
+                self.conn.salt = secrets.token_bytes(4)
+            self.conn.hashes = [hash]
+            self.send_msg(6, data)
+            self.conn.server.connections.pop(self.conn.id)
+            self.conn.id = id
+            self.conn.server.connections[hash] = self.conn
+
     def send_msg(self, id, msg):
         num_packets = math.ceil(len(msg)/self.conn.psz)
         msg_id = self.message_id
@@ -414,7 +498,7 @@ class Inner_Server_Connection:
 ISC = Inner_Server_Connection
 
 class Server_Connection():
-    def __init__(self,socket, id,  ip,port,  raw_parametrs, server, timeout = 10, buffersz = 1024*1024*10):
+    def __init__(self,socket, id,  ip,port,  raw_parametrs, server: Server, timeout = 10, buffersz = 1024*1024*10):
         self.socket = socket
         self.ip = ip
         self.id = id
@@ -434,6 +518,9 @@ class Server_Connection():
         #self.user_inner_buffer = queue.Queue()
         self.recieved_packets_num = 0
         self.inner_queue = queue.Queue()
+        self.salt = secrets.token_bytes(4)
+        self.hashes = [binascii.crc32(self.salt + self.id.to_bytes(4, byteorder='big'))]
+        self.key = None
 
 
 
@@ -446,10 +533,13 @@ class Server_Connection():
         self.server.connections[self.id] = self
         self.inner_channel = ISC(self)
         self.inner_channel.send_msg(0, self.id.to_bytes(4, byteorder='big'))
+        self.inner_channel.send_msg(5, self.server.cert_data)
+        print('Certificate sended')
         self.user_inner_buffer = queue.Queue()
         self.server = server
 
         self.server.addr_id[(self.ip, self.port)] = id
+
 
 
         self.add_packet(global_id= 1, inner_id = 0, data = self.id.to_bytes(4, byteorder='big'), is_left=True)
@@ -519,7 +609,8 @@ class Server_Connection():
     def close(self):
         print('close')
         self.is_alive = False
-        self.server.connections.pop(self.id)
+        for i in self.hashes:
+            self.server.connections.pop(i)
 
     def packet_sender(self):
         t = time.time_ns()
@@ -545,7 +636,7 @@ class Server_Connection():
 
 
 class Server :
-    def __init__(self,ip,port, handler, timeout = 10, buffersz = 1024*1024*10, ):
+    def __init__(self,ip,port, handler, timeout = 10, buffersz = 1024*1024*10, certificate = "certificate.crt", private_key = "private_key.pem" ):
         soc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         soc.settimeout(None)
         self.socket = soc
@@ -559,10 +650,37 @@ class Server :
         self.socket.bind((self.ip, self.port))
         self.connections = {}
         self.is_alive = True
-        reciever_thread = threading.Thread(target=self.packet_reciever)
-        reciever_thread.start()
+
         self.addr_id = dict()
         self.last_id = 0
+
+
+        with open(certificate, "rb") as cert_file:
+            cert_data = cert_file.read()
+
+        cert = x509.load_pem_x509_certificate(cert_data)
+        public_key = cert.public_key()
+
+
+        with open(private_key, "rb") as key_file:
+            key_data = key_file.read()
+        private_key = serialization.load_pem_private_key(
+            key_data,
+            password=None
+        )
+        self.certificate = cert
+        self.cert_data = cert_data
+        self.public_key = public_key
+        self.private_key = private_key
+        print('___Проверка Сертификата___')
+        print(f"Субъект: {cert.subject}")
+        print(f"Действителен до: {cert.not_valid_after_utc}")
+        if cert.not_valid_after_utc < datetime.datetime.now(datetime.timezone.utc):
+            print("ВНИМАНИЕ: Сертификат просрочен!")
+            raise PermissionError ('Сертификат просрочен')
+
+        reciever_thread = threading.Thread(target=self.packet_reciever)
+        reciever_thread.start()
 
 
     def packet_reciever(self):

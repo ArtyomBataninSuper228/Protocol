@@ -1,4 +1,5 @@
 from Base.protocol_core import *
+from pathlib import Path
 
 class Zero_Handler:
     def __init__(self, connection):
@@ -17,4 +18,13 @@ class Zero_Handler:
             time.sleep(1/1000)
 
 
-server = Server('127.0.0.1', 5000, Zero_Handler)
+
+# Получаем путь к папке, где лежит текущий запускной скрипт
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Теперь собираем путь динамически
+cert_path = BASE_DIR / "Base" / "certificate.crt"
+key_path = BASE_DIR / "Base" / "private_key.pem"
+
+
+server = Server('127.0.0.1', 5000, Zero_Handler, certificate = cert_path, private_key = key_path)
