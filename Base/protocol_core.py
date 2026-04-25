@@ -108,7 +108,8 @@ class Inner_Client_Connection:
         self.last_sended_packet_id = 0
         self.last_recieved_id = -1
         self.message_id = 0
-
+        self.key_sended_event = threading.Event()
+        self.sending_shifr = False
     def put_packet(self, id, data):
 
         num = int.from_bytes(data[0:1], byteorder='big')
@@ -148,7 +149,7 @@ class Inner_Client_Connection:
 
             connection_id = int.from_bytes(message[:4], byteorder='big')
 
-            self.conn.id = connection_id
+            self.conn.id_hash = connection_id
             a = 1
             self.conn.send_packet(10, a.to_bytes(4, byteorder='big'))
             self.conn.event.set()
@@ -176,12 +177,21 @@ class Inner_Client_Connection:
                     label=None
                 )
             )
+            if self.key_sended_event.is_set() or self.sending_shifr:
+                return
+            self.sending_shifr = True
             self.send_msg(5, ciphertext)
+            print("shiphr sended")
+            self.key_sended_event.set()
         if id == 6:
             conn_id = int.from_bytes(message[:4], byteorder='big')
-            salt = message[4:36]
+            salt = message[4:12]
             print(conn_id, salt)
-            self.conn.event.set()
+            self.conn.id = conn_id
+            self.conn.id_hash = binascii.crc32(message[:4]+salt)
+            while not self.key_sended_event.wait(0.5):
+                pass
+            self.conn.cert_event.set()
 
 
     def send_msg(self, id, msg):
@@ -226,7 +236,6 @@ class Connection():
         self.buffer = GlobalDataStream()
         self.ip = ip
         self.port = port
-        self.id = 0
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, buffersz)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, buffersz)
@@ -253,7 +262,7 @@ class Connection():
         self.secret_noise = secrets.token_bytes(32)
         self.certificate = None
         self.key = secrets.token_bytes(32)
-        self.id_hash = None
+        self.id_hash = 0
 
         self.block_builder = None
         sender = threading.Thread(target=self.packet_sender)
@@ -262,6 +271,7 @@ class Connection():
         reciever.start()
         self.user_inner_buffer = queue.Queue()
         self.event = threading.Event()
+        self.cert_event = threading.Event()
         self.inner_channel = ICC(self)
         #data = self.secret_noise + int(is_coding).to_bytes(1, byteorder='big')
         # Global ID (0) ||| Inner ID (0) ||| Secret_noise ||| coding |||
@@ -275,8 +285,10 @@ class Connection():
         if ok == 0:
             raise ConnectionError
         self.event.clear()
-        while not self.event.wait(0.5):
+
+        while not self.cert_event.wait(0.5):
             pass
+        print("Connected")
 
 
 
@@ -312,10 +324,13 @@ class Connection():
             self.packets_to_send.append((global_id * 10 + inner_id,  data))
 
     def send_packet(self, id,  data):
-        all_data = id.to_bytes(1, byteorder='big') + self.id.to_bytes(4, byteorder='big') + bytes(data)
+        all_data = id.to_bytes(1, byteorder='big') + self.id_hash.to_bytes(4, byteorder='big') + bytes(data)
         hesh = binascii.crc32(all_data)
         all_data = all_data + hesh.to_bytes(4, byteorder='big')
-        self.socket.sendto(all_data, (self.ip, self.port))
+        try:
+            self.socket.sendto(all_data, (self.ip, self.port))
+        except:
+            pass
 
 
     def packet_sender(self):
@@ -371,6 +386,7 @@ class Connection():
                 pass ### Keep alive
     def close(self):
         self.is_alive = False
+        time.sleep(1 / 5)
 
 
 
@@ -457,11 +473,12 @@ class Inner_Server_Connection:
             while hash in self.conn.server.connections:
                 hash = binascii.crc32(self.conn.salt + id.to_bytes(4, byteorder='big'))
                 self.conn.salt = secrets.token_bytes(4)
+            self.conn.server.connections[hash] = self.conn
             self.conn.hashes = [hash]
             self.send_msg(6, data)
             self.conn.server.connections.pop(self.conn.id)
             self.conn.id = id
-            self.conn.server.connections[hash] = self.conn
+
 
     def send_msg(self, id, msg):
         num_packets = math.ceil(len(msg)/self.conn.psz)
@@ -591,7 +608,7 @@ class Server_Connection():
                     if global_id == 4:
                         pass  ### Keep alive
                 last_con = time.time()
-            time.sleep(1/100000)
+            time.sleep(1/10000)
             if time.time() - last_con > self.timeout:
 
                 self.close()
@@ -697,7 +714,7 @@ class Server :
                 continue
             except ConnectionError:
                 continue
-            except ConnectionRefusedError:
+            except:
                 continue
             mv = memoryview(buff)
             data = mv[:len]

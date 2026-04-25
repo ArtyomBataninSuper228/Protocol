@@ -2,11 +2,11 @@ import time
 
 from Base.protocol_core import *
 import random
-con = Connection("192.168.1.12", 6552)
+con = Connection("46.45.15.136", 6552)
 con.timeout = 4
 con.psz = 1280
 data = []
-num = 100
+num = 1
 for i in range(con.psz*255):
     data.append(random.randint(0, 255))
 t1 = time.time_ns()

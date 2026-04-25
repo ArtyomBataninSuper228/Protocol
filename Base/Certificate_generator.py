@@ -28,7 +28,7 @@ def generate_key():
         x509.NameAttribute(NameOID.COUNTRY_NAME, "RU"),
         x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, ""),
         x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Telemetry"),
-        x509.NameAttribute(NameOID.COMMON_NAME, "my-secure-server.local"),
+        x509.NameAttribute(NameOID.COMMON_NAME, "My Protocol"),
     ])
 
     # Сборка сертификата
