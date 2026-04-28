@@ -8,13 +8,10 @@ class Zero_Handler:
         t = threading.Thread(target=self.resender)
         t.start()
     def resender(self):
-        print("resender")
         while self.connection.is_alive:
             while not self.connection.inner_queue.empty():
                 msg = self.connection.inner_queue.get()
-                print("Getted message", len(msg))
                 self.connection.send_inner(msg)
-                print("Sended message")
             time.sleep(1/1000)
 
 

@@ -10,6 +10,7 @@ import secrets
 import os
 import zlib
 from ssl import cert_time_to_seconds
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
@@ -141,15 +142,16 @@ class Inner_Client_Connection:
             for i in dock:
                 message += bytes(i)
             self.message_docks.pop(msg_id)
-            t = threading.Thread(target=self.process_message, args=(id, message,))
+            t = threading.Thread(target=self.process_message, args=(id, message, msg_id ))
             t.start()
-    def process_message(self, id,  message):
+    def process_message(self, id,  message, msg_id):
         if id == 0:
             self.conn.is_started = True
 
             connection_id = int.from_bytes(message[:4], byteorder='big')
 
-            self.conn.id_hash = connection_id
+            self.conn.id_hash = message[:4]#connection_id
+
             a = 1
             self.conn.send_packet(10, a.to_bytes(4, byteorder='big'))
             self.conn.event.set()
@@ -167,10 +169,9 @@ class Inner_Client_Connection:
             if cert.not_valid_after_utc < datetime.datetime.now(datetime.timezone.utc):
                 print("ВНИМАНИЕ: Сертификат просрочен!")
                 raise PermissionError('Сертификат просрочен')
-            print('KEY', self.conn.key)
 
             ciphertext = public_key.encrypt(
-                self.conn.key,
+                self.conn.key + self.conn.salt,
                 padding.OAEP(
                     mgf=padding.MGF1(algorithm=hashes.SHA256()),  # Функция генерации маски
                     algorithm=hashes.SHA256(),  # Хеш-алгоритм
@@ -181,17 +182,24 @@ class Inner_Client_Connection:
                 return
             self.sending_shifr = True
             self.send_msg(5, ciphertext)
-            print("shiphr sended")
             self.key_sended_event.set()
         if id == 6:
+            aead = ChaCha20Poly1305(self.conn.key)
+            nonce = self.conn.salt + msg_id.to_bytes(4, byteorder='big')
+            try:
+                message = aead.decrypt(nonce, message, None)
+            except Exception as e:
+                print("Message decrypt error")
+                return
+
             conn_id = int.from_bytes(message[:4], byteorder='big')
             salt = message[4:12]
-            print(conn_id, salt)
             self.conn.id = conn_id
-            self.conn.id_hash = binascii.crc32(message[:4]+salt)
+            self.conn.id_hash = binascii.crc32(message[:4]+salt).to_bytes(4, byteorder='big')
             while not self.key_sended_event.wait(0.5):
                 pass
             self.conn.cert_event.set()
+            print("Let's go!")
 
 
     def send_msg(self, id, msg):
@@ -258,11 +266,12 @@ class Connection():
         self.recieved_packets = deque()
         self.packets_to_send = deque()
         self.blocks_in_process = []
-        self.salt = None
+        self.salt = secrets.token_bytes(8)
         self.secret_noise = secrets.token_bytes(32)
         self.certificate = None
         self.key = secrets.token_bytes(32)
-        self.id_hash = 0
+        k = 0
+        self.id_hash = k.to_bytes(4, byteorder='big')
 
         self.block_builder = None
         sender = threading.Thread(target=self.packet_sender)
@@ -324,7 +333,7 @@ class Connection():
             self.packets_to_send.append((global_id * 10 + inner_id,  data))
 
     def send_packet(self, id,  data):
-        all_data = id.to_bytes(1, byteorder='big') + self.id_hash.to_bytes(4, byteorder='big') + bytes(data)
+        all_data = id.to_bytes(1, byteorder='big') + self.id_hash + bytes(data)
         hesh = binascii.crc32(all_data)
         all_data = all_data + hesh.to_bytes(4, byteorder='big')
         try:
@@ -456,7 +465,7 @@ class Inner_Server_Connection:
         elif id == 3:
             self.conn.inner_queue.put(message)
         elif id == 5:
-            decrypted_key = self.conn.server.private_key.decrypt(
+            decrypted = self.conn.server.private_key.decrypt(
                 message,
                 padding.OAEP(
                     mgf=padding.MGF1(algorithm=hashes.SHA256()),
@@ -464,9 +473,11 @@ class Inner_Server_Connection:
                     label=None
                 )
             )
+            key = decrypted[0:32]
+            salt = decrypted[32:40]
 
-            self.conn.key = decrypted_key
-            print('key',self.conn.key)
+            self.conn.key = key
+            self.conn.salt = salt
             id = int.from_bytes(secrets.token_bytes(4), byteorder='big')
             data = id.to_bytes(4, byteorder='big') + self.conn.salt
             hash = binascii.crc32(self.conn.salt + self.conn.id.to_bytes(4, byteorder='big'))
@@ -475,9 +486,14 @@ class Inner_Server_Connection:
                 self.conn.salt = secrets.token_bytes(4)
             self.conn.server.connections[hash] = self.conn
             self.conn.hashes = [hash]
-            self.send_msg(6, data)
+
+            aead = ChaCha20Poly1305(self.conn.key)
+            nonce = self.conn.salt + self.message_id.to_bytes(4, byteorder='big')
+            encoded_data = aead.encrypt(nonce, data, None)
+            self.send_msg(6, encoded_data)
             self.conn.server.connections.pop(self.conn.id)
             self.conn.id = id
+            print("Let's go!")
 
 
     def send_msg(self, id, msg):
@@ -551,7 +567,6 @@ class Server_Connection():
         self.inner_channel = ISC(self)
         self.inner_channel.send_msg(0, self.id.to_bytes(4, byteorder='big'))
         self.inner_channel.send_msg(5, self.server.cert_data)
-        print('Certificate sended')
         self.user_inner_buffer = queue.Queue()
         self.server = server
 
